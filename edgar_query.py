@@ -13,95 +13,175 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 )
-logger = logging.getLogger("edgar_8k_ma")
+logger = logging.getLogger("edgar_spcl_sit")
 
 load_dotenv()
 
+# ========== Keywords and classification function ==========
+# Keywords for special situations detection
+KEYWORDS = [
+    'merger', 'acquisition', 'acquires', 'acquired', 'to be acquired', 'combination',
+    'tender offer', 'going private', 'go-private', 'take private',
+    'spin-off', 'spinoff', 'split-off', 'carve-out',
+    'restructuring', 'recapitalization', 'rights offering',
+    'asset sale', 'divestiture', 'sell division', 'disposition',
+    'chapter 11', 'bankruptcy', 'emerges from chapter',
+    'activist', '13d', '13d/a', 'strategic review',
+    'special dividend', 'buyback', 'share repurchase', 'scheme of arrangement',
+    '13e-3', 'sc to-t', 'sc to-i'
+]
+
+def classify_(text: str) -> str:
+    """
+    Classify a text snippet into deal/action categories based on keywords.
+    """
+    if not text:
+        return 'Other'
+
+    t = text.lower()
+
+    # Form-type hints from SEC titles/links
+    if '13e-3' in t:
+        return 'Going-Private (13E-3)'
+    if 'sc to-t' in t:
+        return 'Tender Offer (TO-T)'
+    if 'sc to-i' in t:
+        return 'Issuer Tender (TO-I)'
+
+    if ('tender offer' in t or 'going private' in t or 'go-private' in t or 'take private' in t):
+        return 'Tender/Going-Private'
+    if ('spin-off' in t or 'spinoff' in t or 'split-off' in t or 'carve-out' in t):
+        return 'Spin-off'
+    if ('merger' in t or 'acquisition' in t or 'acquires' in t or 'to be acquired' in t or 'combination' in t):
+        return 'M&A'
+    if ('restructuring' in t or 'recapitalization' in t or 'rights offering' in t):
+        return 'Restructuring/Recap'
+    if ('asset sale' in t or 'divestiture' in t or 'sell division' in t or 'disposition' in t):
+        return 'Asset Sale'
+    if ('chapter 11' in t or 'bankruptcy' in t or 'emerges from chapter' in t):
+        return 'Bankruptcy'
+    if '13d' in t:
+        return 'Activist/13D'
+    if 'strategic review' in t:
+        return 'Strategic Review'
+    if 'special dividend' in t:
+        return 'Special Dividend'
+    if 'buyback' in t or 'share repurchase' in t:
+        return 'Buyback'
+
+    return 'Other'
+
 # ========== Core search ==========
-def find_8k_ma(
+def find_special_situations(
     date_str: str,
-    require_both: bool = False,
+    forms: List[str],
     include_exhibits: bool = True,
-    max_filings: Optional[int] = None,   # <-- NEW
+    max_filings: Optional[int] = None,
     log: Optional[logging.Logger] = None
 ) -> pd.DataFrame:
     """
-    Scan all 8-Ks filed on `date_str` (YYYY-MM-DD) for 'merger'/'acquisition'.
+    Scan all filings of specified forms on `date_str` (YYYY-MM-DD) for 'merger'/'acquisition'.
     Set max_filings to limit how many filings are scanned (useful for testing).
     """
     log = log or logger
     log.info(
-        "Starting 8-K scan for date=%s (require_both=%s, include_exhibits=%s, max_filings=%s)",
-        date_str, require_both, include_exhibits, max_filings
+        "Starting special situations scan for date=%s (forms=%s, include_exhibits=%s, max_filings=%s)",
+        date_str, forms, include_exhibits, max_filings
     )
 
-    gen = get_filings(form="8-K", filing_date=date_str)
-    if max_filings is not None:
-        gen = islice(gen, max_filings)
-        log.info("Limiting scan to the first %d filings for testing.", max_filings)
-
-    filings = list(gen)
-    log.info("Fetched %d 8-K filings for %s", len(filings), date_str)
-
-    m_pat = re.compile(r"\bmergers?\b", re.IGNORECASE)
-    a_pat = re.compile(r"\bacquisitions?\b", re.IGNORECASE)
+    keyword_pats = [re.compile(r"\b" + keyword + r"\b", re.IGNORECASE) for keyword in KEYWORDS]
 
     def has_keywords(text: Optional[str]) -> bool:
         if not text:
             return False
-        return ((m_pat.search(text) is not None) and (a_pat.search(text) is not None)) \
-            if require_both else ((m_pat.search(text) is not None) or (a_pat.search(text) is not None))
+        return any(pat.search(text) is not None for pat in keyword_pats)
 
     rows: List[dict] = []
-    for idx, f in enumerate(filings, 1):
-        where = []
+    for form in forms:
+        gen = get_filings(form=form, filing_date=date_str)
+        if max_filings is not None:
+            gen = islice(gen, max_filings)
+            log.info("Limiting scan to the first %d filings for testing.", max_filings)
 
-        try:
-            if has_keywords(f.text()):
-                where.append("primary")
-        except Exception as e:
-            log.warning("Primary text failed for %s (%s): %s", f.accession_no, f.company, e)
+        filings = list(gen)
+        log.info("Fetched %d %s filings for %s", len(filings), form, date_str)
 
-        if include_exhibits:
+        for idx, f in enumerate(filings, 1):
+            where = []
+
             try:
-                for att in getattr(f, "attachments", []) or []:
-                    doc = getattr(att, "document", "") or ""
-                    typ = getattr(att, "type", "") or ""
-                    if doc.lower().endswith((".htm", ".html", ".txt")) or typ.upper().startswith(("EX", "EX-")):
-                        try:
-                            if has_keywords(att.content()):
-                                where.append(f"attachment:{doc or typ}")
-                        except Exception as inner_e:
-                            log.debug("Skip attachment %s for %s: %s", doc, f.accession_no, inner_e)
+                if has_keywords(f.text()):
+                    where.append("primary")
             except Exception as e:
-                log.warning("Attachments failed for %s: %s", f.accession_no, e)
+                log.warning("Primary text failed for %s (%s): %s", f.accession_no, f.company, e)
 
-        try:
-            eightk = f.obj()
-            if getattr(eightk, "has_press_release", False):
-                for pr in getattr(eightk, "press_releases", []) or []:
-                    if has_keywords(getattr(pr, "content", "") or ""):
-                        where.append("press_release")
-        except Exception as e:
-            log.debug("8-K object/press releases not available for %s: %s", f.accession_no, e)
+            if include_exhibits:
+                try:
+                    for att in getattr(f, "attachments", []) or []:
+                        doc = getattr(att, "document", "") or ""
+                        typ = getattr(att, "type", "") or ""
+                        if doc.lower().endswith((".htm", ".html", ".txt")) or typ.upper().startswith(("EX", "EX-")):
+                            try:
+                                if has_keywords(att.content()):
+                                    where.append(f"attachment:{doc or typ}")
+                            except Exception as inner_e:
+                                log.debug("Skip attachment %s for %s: %s", doc, f.accession_no, inner_e)
+                except Exception as e:
+                    log.warning("Attachments failed for %s: %s", f.accession_no, e)
 
-        if where:
-            rows.append({
-                "company": f.company,
-                "cik": f.cik,
-                "filing_date": str(f.filing_date),
-                "accession_no": f.accession_no,
-                "items": getattr(f, "items", None),
-                "where_found": "; ".join(sorted(set(where))),
-                "link": getattr(f, "url", None),
-            })
+            if where:
+                rows.append({
+                    "company": f.company,
+                    "cik": f.cik,
+                    "filing_date": str(f.filing_date),
+                    "accession_no": f.accession_no,
+                    "form_type": form,
+                    "classification": classify_(f.text()),
+                    "where_found": "; ".join(sorted(set(where))),
+                    "link": getattr(f, "url", None),
+                })
 
-        if idx % 10 == 0:
-            log.info("Scanned %d/%d filings...", idx, len(filings))
+            if idx % 10 == 0:
+                log.info("Scanned %d/%d filings...", idx, len(filings))
 
-    df = pd.DataFrame(rows).sort_values(["company", "filing_date"]).reset_index(drop=True)
+    if not rows:
+        # Return empty DataFrame with proper columns
+        df = pd.DataFrame(columns=[
+            "company", "cik", "filing_date", "accession_no", 
+            "form_type", "classification", "where_found", "link"
+        ])
+    else:
+        df = pd.DataFrame(rows).sort_values(["company", "filing_date"]).reset_index(drop=True)
+    
     log.info("Found %d matching filings for %s", len(df), date_str)
     return df
+
+def find_single_form_situations(
+    date_str: str,
+    form_type: str,
+    include_exhibits: bool = True,
+    max_filings: Optional[int] = None,
+    log: Optional[logging.Logger] = None
+) -> pd.DataFrame:
+    """
+    Convenience function to scan a single form type for special situations.
+    Wrapper around find_special_situations for easier testing.
+    
+    Args:
+        date_str: Filing date in YYYY-MM-DD format
+        form_type: Single SEC form type (e.g., "8-K", "SC 13D", "SC 13E3", "SC TO-T")
+        include_exhibits: Whether to search exhibits/attachments
+        max_filings: Limit number of filings (useful for testing)
+        log: Logger instance
+    """
+    return find_special_situations(
+        date_str=date_str,
+        forms=[form_type],
+        include_exhibits=include_exhibits,
+        max_filings=max_filings,
+        log=log
+    )
+
 # ========== Google Sheets append ==========
 def append_df_to_gsheet(
     df: pd.DataFrame,
@@ -157,16 +237,31 @@ if __name__ == "__main__":
     set_identity(os.getenv("EDGAR_IDENTITY"))
 
     # Choose the filing date to scan
-    date_to_scan = "2025-08-08"  # YYYY-MM-DD
+    date_to_scan = "2025-08-15"  # YYYY-MM-DD
 
-    # Run the scan
-    hits = find_8k_ma(
+    # For testing single form types, uncomment one of these:
+    # hits = find_single_form_situations(date_to_scan, "8-K", max_filings=5, log=logger)
+    #hits = find_single_form_situations(date_to_scan, "SCHEDULE 13D/A", max_filings=5, log=logger)
+    # hits = find_single_form_situations(date_to_scan, "SC 13E3", max_filings=5, log=logger)
+    # hits = find_single_form_situations(date_to_scan, "SC TO-T", max_filings=5, log=logger)
+
+    # Run the scan using the new special situations function (all forms)
+    hits = find_special_situations(
         date_str=date_to_scan,
-        require_both=False,          # True -> both 'merger' AND 'acquisition' must appear
+        forms=["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"],
         include_exhibits=True,
-        max_filings=20,
+        max_filings=None,
         log=logger
     )
+
+    # Display results summary
+    if not hits.empty:
+        print(f"\nFound {len(hits)} special situations:")
+        print(hits[['company', 'form_type', 'classification', 'where_found']].to_string(index=False))
+        print(f"\nClassification breakdown:")
+        print(hits['classification'].value_counts().to_string())
+    else:
+        print("No special situations found.")
 
     # Append to Google Sheet (replace with your info)
     append_df_to_gsheet(

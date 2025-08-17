@@ -1,5 +1,6 @@
-# Environment variables
+# Environment variables and secrets
 .env
+.secrets/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
