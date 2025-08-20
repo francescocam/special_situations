@@ -6,6 +6,7 @@ from itertools import islice
 import pandas as pd
 from typing import Optional, List
 from edgar import set_identity, get_filings
+import gspread
 
 # ========== Logging setup ==========
 # You can configure this once in your app entrypoint
@@ -77,11 +78,13 @@ def find_special_situations(
     forms: List[str],
     include_exhibits: bool = True,
     max_filings: Optional[int] = None,
+    classifications: Optional[List[str]] = None,
     log: Optional[logging.Logger] = None
 ) -> pd.DataFrame:
     """
     Scan all filings of specified forms on `date_str` (YYYY-MM-DD) for 'merger'/'acquisition'.
     Set max_filings to limit how many filings are scanned (useful for testing).
+    Set classifications to filter results by specific classification types.
     """
     log = log or logger
     log.info(
@@ -153,6 +156,11 @@ def find_special_situations(
     else:
         df = pd.DataFrame(rows).sort_values(["company", "filing_date"]).reset_index(drop=True)
     
+    # Filter by classifications if specified
+    if classifications is not None:
+        df = df[df["classification"].isin(classifications)]
+        log.info("Filtered to %d filings matching specified classifications: %s", len(df), classifications)
+    
     log.info("Found %d matching filings for %s", len(df), date_str)
     return df
 
@@ -161,6 +169,7 @@ def find_single_form_situations(
     form_type: str,
     include_exhibits: bool = True,
     max_filings: Optional[int] = None,
+    classifications: Optional[List[str]] = None,
     log: Optional[logging.Logger] = None
 ) -> pd.DataFrame:
     """
@@ -172,6 +181,7 @@ def find_single_form_situations(
         form_type: Single SEC form type (e.g., "8-K", "SC 13D", "SC 13E3", "SC TO-T")
         include_exhibits: Whether to search exhibits/attachments
         max_filings: Limit number of filings (useful for testing)
+        classifications: List of classification types to include (e.g., ["M&A", "Spin-off"])
         log: Logger instance
     """
     return find_special_situations(
@@ -179,6 +189,35 @@ def find_single_form_situations(
         forms=[form_type],
         include_exhibits=include_exhibits,
         max_filings=max_filings,
+        classifications=classifications,
+        log=log
+    )
+def find_multiple_form_situations(
+    date_str: str,
+    form_types: List[str],
+    include_exhibits: bool = True,
+    max_filings: Optional[int] = None,
+    classifications: Optional[List[str]] = None,
+    log: Optional[logging.Logger] = None
+) -> pd.DataFrame:
+    """
+    Convenience function to scan multiple specified form types for special situations.
+    Wrapper around find_special_situations for easier testing.
+    
+    Args:
+        date_str: Filing date in YYYY-MM-DD format
+        form_types: List of SEC form types to search (e.g., ["8-K", "SC 13D", "SC TO-T"])
+        include_exhibits: Whether to search exhibits/attachments
+        max_filings: Limit number of filings per form type (useful for testing)
+        classifications: List of classification types to include (e.g., ["M&A", "Spin-off"])
+        log: Logger instance
+    """
+    return find_special_situations(
+        date_str=date_str,
+        forms=form_types,
+        include_exhibits=include_exhibits,
+        max_filings=max_filings,
+        classifications=classifications,
         log=log
     )
 
@@ -196,7 +235,6 @@ def append_df_to_gsheet(
     - `worksheet_name`: tab name to write to
     - `service_account_json`: path to your service-account JSON key
     """
-    import gspread
     from google.oauth2.service_account import Credentials
 
     log = log or logger
@@ -241,18 +279,27 @@ if __name__ == "__main__":
 
     # For testing single form types, uncomment one of these:
     # hits = find_single_form_situations(date_to_scan, "8-K", max_filings=5, log=logger)
-    #hits = find_single_form_situations(date_to_scan, "SCHEDULE 13D/A", max_filings=5, log=logger)
+    # hits = find_single_form_situations(date_to_scan, "SCHEDULE 13D/A", max_filings=5, log=logger)
     # hits = find_single_form_situations(date_to_scan, "SC 13E3", max_filings=5, log=logger)
     # hits = find_single_form_situations(date_to_scan, "SC TO-T", max_filings=5, log=logger)
 
+    # For testing multiple specific form types, uncomment this:
+    # hits = find_multiple_form_situations(date_to_scan, ["8-K", "SC 13D"], max_filings=5, log=logger)
+
+    # For testing classification filtering, uncomment one of these:
+    # hits = find_special_situations(date_to_scan, ["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"], classifications=["M&A"], log=logger)
+    hits = find_special_situations(date_to_scan, 
+                                   ["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"], 
+                                   classifications=["Spin-off"], log=logger)
+
     # Run the scan using the new special situations function (all forms)
-    hits = find_special_situations(
-        date_str=date_to_scan,
-        forms=["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"],
-        include_exhibits=True,
-        max_filings=None,
-        log=logger
-    )
+    # hits = find_special_situations(
+    #     date_str=date_to_scan,
+    #     forms=["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"],
+    #     include_exhibits=True,
+    #     max_filings=None,
+    #     log=logger
+    # )
 
     # Display results summary
     if not hits.empty:
