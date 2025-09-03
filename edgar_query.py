@@ -7,6 +7,7 @@ import pandas as pd
 from typing import Optional, List
 from edgar import set_identity, get_filings
 import gspread
+import argparse
 
 # ========== Logging setup ==========
 # You can configure this once in your app entrypoint
@@ -178,7 +179,7 @@ def find_single_form_situations(
     
     Args:
         date_str: Filing date in YYYY-MM-DD format
-        form_type: Single SEC form type (e.g., "8-K", "SC 13D", "SC 13E3", "SC TO-T")
+        form_type: Single SEC form type (e.g., "8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T")
         include_exhibits: Whether to search exhibits/attachments
         max_filings: Limit number of filings (useful for testing)
         classifications: List of classification types to include (e.g., ["M&A", "Spin-off"])
@@ -206,7 +207,7 @@ def find_multiple_form_situations(
     
     Args:
         date_str: Filing date in YYYY-MM-DD format
-        form_types: List of SEC form types to search (e.g., ["8-K", "SC 13D", "SC TO-T"])
+        form_types: List of SEC form types to search (e.g., ["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"])
         include_exhibits: Whether to search exhibits/attachments
         max_filings: Limit number of filings per form type (useful for testing)
         classifications: List of classification types to include (e.g., ["M&A", "Spin-off"])
@@ -225,7 +226,7 @@ def find_multiple_form_situations(
 def append_df_to_gsheet(
     df: pd.DataFrame,
     spreadsheet_key: str,
-    worksheet_name: str = "8K_MA_hits",
+    worksheet_name: str,
     service_account_json: Optional[str] = None,
     log: Optional[logging.Logger] = None
 ) -> None:
@@ -269,37 +270,26 @@ def append_df_to_gsheet(
     ws.append_rows(data_rows, value_input_option="RAW")
     log.info("Appended %d rows to '%s' in sheet %s.", len(data_rows), worksheet_name, spreadsheet_key)
 
-# ========== Example usage ==========
+# ========== CLI usage ==========
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Scan EDGAR filings for special situations")
+    parser.add_argument('--date_to_scan', required=True, help='Date to scan in YYYY-MM-DD format')
+    parser.add_argument('--forms', nargs='+', required=True, help='List of form types to scan')
+    parser.add_argument('--max_filings', type=int, help='Maximum number of filings to scan per form')
+    parser.add_argument('--classifications', nargs='*', help='List of classifications to filter by')
+    args = parser.parse_args()
+
     # Identify yourself to EDGAR (required)
     set_identity(os.getenv("EDGAR_IDENTITY"))
 
-    # Choose the filing date to scan
-    date_to_scan = "2025-09-02"  # YYYY-MM-DD
-
-    # For testing single form types, uncomment one of these:
-    # hits = find_single_form_situations(date_to_scan, "8-K", max_filings=5, log=logger)
-    # hits = find_single_form_situations(date_to_scan, "SCHEDULE 13D/A", max_filings=5, log=logger)
-    # hits = find_single_form_situations(date_to_scan, "SC 13E3", max_filings=5, log=logger)
-    # hits = find_single_form_situations(date_to_scan, "SC TO-T", max_filings=5, log=logger)
-
-    # For testing multiple specific form types, uncomment this:
-    # hits = find_multiple_form_situations(date_to_scan, ["8-K", "SC 13D"], max_filings=5, log=logger)
-
-    # For testing classification filtering, uncomment one of these:
-    # hits = find_special_situations(date_to_scan, ["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"], classifications=["M&A"], log=logger)
-    hits = find_special_situations(date_to_scan, 
-                                   ["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"], 
-                                   classifications=["Spin-off"], log=logger)
-
-    # Run the scan using the new special situations function (all forms)
-    # hits = find_special_situations(
-    #     date_str=date_to_scan,
-    #     forms=["8-K", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13E3", "SC TO-I", "SC TO-T"],
-    #     include_exhibits=True,
-    #     max_filings=None,
-    #     log=logger
-    # )
+    # Run the scan
+    hits = find_special_situations(
+        date_str=args.date_to_scan,
+        forms=args.forms,
+        max_filings=args.max_filings,
+        classifications=args.classifications if args.classifications else None,
+        log=logger
+    )
 
     # Display results summary
     if not hits.empty:
