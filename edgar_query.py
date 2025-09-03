@@ -275,7 +275,7 @@ if __name__ == "__main__":
     set_identity(os.getenv("EDGAR_IDENTITY"))
 
     # Choose the filing date to scan
-    date_to_scan = "2025-08-15"  # YYYY-MM-DD
+    date_to_scan = "2025-09-02"  # YYYY-MM-DD
 
     # For testing single form types, uncomment one of these:
     # hits = find_single_form_situations(date_to_scan, "8-K", max_filings=5, log=logger)
